@@ -628,4 +628,39 @@ mod tests {
         }
         assert_eq!(control.takeable_interrupt(true), Some(4));
     }
+
+    #[test]
+    fn tscl_then_tsch_captures_the_native_low_word_wrap() {
+        let mut control = Control {
+            tscl: u32::MAX,
+            tsch: 7,
+            ..Control::default()
+        };
+        control.write(0x0a, 0); // TSCL write enables; it does not reset the counter.
+        control.tick(0, 0);
+
+        let low = control.read(0x0a, 0);
+        let high = control.read(0x0b, 0);
+        assert_eq!(low, 0);
+        assert_eq!(high, 8);
+    }
+
+    #[test]
+    fn an_interrupt_tscl_read_replaces_the_high_word_snapshot() {
+        let mut control = Control {
+            tscl: u32::MAX,
+            tsch: 3,
+            ..Control::default()
+        };
+        control.write(0x0a, 0);
+
+        let main_low = control.read(0x0a, 0);
+        control.tick(0, 0);
+        let isr_low = control.read(0x0a, 0);
+        let main_high_after_isr = control.read(0x0b, 0);
+
+        assert_eq!(main_low, u32::MAX);
+        assert_eq!(isr_low, 0);
+        assert_eq!(main_high_after_isr, 4);
+    }
 }
