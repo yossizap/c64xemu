@@ -837,6 +837,38 @@ impl Machine {
         self.device.cpu().register(bank, index)
     }
 
+    /// Observe the focused core's stack without touching guest stack bytes.
+    pub fn configure_stack_observation(&mut self, start: u32, end: u32) -> Result<(), String> {
+        self.device
+            .cpu_mut()
+            .configure_stack_observation(start, end)
+    }
+
+    /// Configure the same passive stack observer on every core, without changing the focus.
+    pub fn configure_stack_observation_all(&mut self, start: u32, end: u32) -> Result<(), String> {
+        for core in 0..self.device.cores() {
+            self.device
+                .with_core(core, |cpu| cpu.configure_stack_observation(start, end))?;
+        }
+        Ok(())
+    }
+
+    /// Observations in ascending core order, including cores still held in reset.
+    pub fn stack_observations(&self) -> Vec<Value> {
+        (0..self.device.cores())
+            .filter_map(|core| {
+                self.device
+                    .core(core)
+                    .stack_observation()
+                    .map(|observation| {
+                        let mut value = serde_json::to_value(observation).unwrap();
+                        value["core"] = json!(core);
+                        value
+                    })
+            })
+            .collect()
+    }
+
     /// The endianness the device is strapped to, which the GDB stub's word order follows.
     pub fn endian(&self) -> Endian {
         self.device.cpu().endian()
@@ -1109,6 +1141,9 @@ impl Machine {
             "cores": snapshot.cores,
             "stats": snapshot.stats,
         });
+        if let Some(observation) = self.device.cpu().stack_observation() {
+            state["stack_observation"] = json!(observation);
+        }
         // What the boot the board strapped has done: how a case tells a boot that completed
         // from one still waiting for its next frame, cell or EEPROM block.
         for (member, report) in self.device.boot().report(self.cores()) {
@@ -1582,6 +1617,74 @@ mod tests {
             assert_eq!(machine.device.core(1).pc(), 8);
             assert_eq!(machine.device.core(3).pc(), 8);
         }
+    }
+
+    #[test]
+    fn all_core_stack_observation_is_ordered_and_preserves_focus() {
+        let mut machine = Machine::bare(Cpu::new(0));
+        machine.device = Device::with_boot_mode(&crate::device::C6472, 0, Endian::Little, 0);
+        machine.device.fabric().set_held_in_reset(1, true);
+        machine.set_focus(4);
+        machine
+            .configure_stack_observation_all(0x1000, 0x2000)
+            .unwrap();
+        assert_eq!(machine.focus(), 4);
+        assert_eq!(machine.stack_observations().len(), 6);
+        assert!(machine.core_held_in_reset(1));
+        assert_eq!(machine.stack_observations()[1]["initialized"], false);
+        for core in 0..6 {
+            machine.device.with_core(core, |cpu| {
+                cpu.set_register("B15", 0x2000 - 4 * (core as u32 + 1))
+                    .unwrap();
+            });
+        }
+        assert_eq!(machine.focus(), 4);
+        let observations = machine.stack_observations();
+        for (core, observation) in observations.iter().enumerate() {
+            assert_eq!(observation["core"], core);
+            assert_eq!(observation["initialized"], true);
+            assert_eq!(observation["min_sp"], 0x2000 - 4 * (core as u32 + 1));
+        }
+        machine
+            .device
+            .with_core(5, |cpu| cpu.set_register("B15", 0x2004).unwrap());
+        machine
+            .device
+            .with_core(5, |cpu| cpu.set_register("B15", 0x1ffc).unwrap());
+        assert_eq!(machine.stack_observations()[5]["out_of_bounds_sp"], true);
+    }
+
+    #[test]
+    fn all_core_stack_observer_does_not_change_guest_execution() {
+        let mut plain = Machine::bare(Cpu::new(0));
+        let mut observed = Machine::bare(Cpu::new(0));
+        for machine in [&mut plain, &mut observed] {
+            machine.device = Device::with_boot_mode(&crate::device::C6472, 0, Endian::Little, 0);
+            for core in 0..6 {
+                machine
+                    .device
+                    .with_core(core, |cpu| cpu.write_words(0, &[0; 32]));
+            }
+        }
+        observed
+            .configure_stack_observation_all(0x1000, 0x2000)
+            .unwrap();
+        assert_eq!(
+            plain.resume(&mut [StopCondition::Budget(40)]).unwrap(),
+            observed.resume(&mut [StopCondition::Budget(40)]).unwrap()
+        );
+        let plain_state = plain.state_json(false);
+        let mut observed_state = observed.state_json(false);
+        observed_state
+            .as_object_mut()
+            .unwrap()
+            .remove("stack_observation");
+        observed_state
+            .as_object_mut()
+            .unwrap()
+            .remove("stack_observations");
+        assert_eq!(plain_state, observed_state);
+        assert_eq!(plain.cycles(), observed.cycles());
     }
 
     #[test]

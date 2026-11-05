@@ -150,6 +150,13 @@ c64xemu run [OPTIONS] <IMAGE>
 | `--max-cycles CYCLES` | `10000000` | Cycle budget for the whole run; `0` runs without a limit. Measured against the device cycle while a ROM boot is running and against the focused core's cycle counter afterwards (`run_clock`), because a held core retires nothing and could not pace a budget. Exhausting it is an error, not a clean finish. |
 | `--state-out FILE` | stdout | Write the state report here instead of printing it. Dumps, the perf report and diagnostics stay on stderr either way. |
 | `--dump ADDR:LEN` | none | Print a memory window on stderr when the run ends. Repeatable; windows print in the order given, before the state report. |
+| `--stack-window START:END` | none | Observe the focused core's B15 and committed stores in a word-aligned stack window. Adds `stack_observation` to the state JSON. |
+| `--stack-window-all START:END` | none | Observe B15 and committed stores on every core; adds ordered `stack_observations` entries to the state JSON. Mutually exclusive with `--stack-window`. |
+
+Stack observation is passive and detects stores from CPU writeback when a store overlaps the
+configured window. Stores entirely outside it are not flagged, and DMA or global memory aliases
+are not covered. All-core mode includes cores held in reset; their entries remain uninitialized
+until they execute a B15 write.
 | `--pc-trail N` | `0` | Keep the last N execute-packet addresses, collapsing runs of the same address. Printed under `last N execute packets:` when the run faults, and used to annotate a `--trap-oob` stop. Zero keeps nothing: the trail costs a push per cycle, so a plain batch run does not install the hook at all. |
 | `--trap-oob` | off | Stop as soon as the program counter leaves every loaded segment. The check runs once per cycle against the ranges `Machine::loaded_ranges` reports, prints `fetch left the image at ...` plus up to twelve trail entries on stderr, and stops with `OutOfBounds`. An image whose memory came off the wire reports no ranges at all, so on an Ethernet or I2C boot the first cycle already looks out of bounds. |
 | `--perf` | off | Print the performance report on stderr after the state report. |

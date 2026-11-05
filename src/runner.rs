@@ -29,6 +29,12 @@ pub struct RunArgs {
     /// Print this memory window when the run ends; repeatable
     #[arg(long, value_parser = parse_dump, value_name = "ADDR:LEN", help_heading = "Batch run")]
     pub dump: Vec<(u32, usize)>,
+    /// Observe B15 and committed stores within START:END without writing a guest watermark
+    #[arg(long, value_parser = parse_stack_window, value_name = "START:END", help_heading = "Batch run")]
+    pub stack_window: Option<(u32, u32)>,
+    /// Observe B15 and committed stores on every core within START:END
+    #[arg(long, value_parser = parse_stack_window, value_name = "START:END", conflicts_with = "stack_window", help_heading = "Batch run")]
+    pub stack_window_all: Option<(u32, u32)>,
     /// Keep this many recent execute-packet addresses for fault diagnosis
     #[arg(
         long,
@@ -48,6 +54,15 @@ pub struct RunArgs {
 pub fn run(args: RunArgs) -> Result<u8, String> {
     crate::install_termination_handler();
     let mut machine = Machine::load(&args.image, &args.machine)?;
+    if let Some((start, end)) = args.stack_window {
+        machine.configure_stack_observation(start, end)?;
+    }
+    if let Some((start, end)) = args.stack_window {
+        machine.configure_stack_observation(start, end)?;
+    }
+    if let Some((start, end)) = args.stack_window_all {
+        machine.configure_stack_observation_all(start, end)?;
+    }
     if machine.stop_address().is_none() {
         return Err("ELF has no C$$EXIT symbol; pass --stop-pc".into());
     }
@@ -132,7 +147,11 @@ pub fn run(args: RunArgs) -> Result<u8, String> {
     }
     let exit_code = machine.exit_code();
     machine.finish()?;
-    let state = machine.state_json(args.machine.profile);
+    let mut state = machine.state_json(args.machine.profile);
+    if args.stack_window_all.is_some() {
+        state.as_object_mut().unwrap().remove("stack_observation");
+        state["stack_observations"] = serde_json::json!(machine.stack_observations());
+    }
     let rendered = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
     if let Some(path) = &args.state_out {
         fs::write(path, rendered).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -184,4 +203,16 @@ fn parse_dump(text: &str) -> Result<(u32, usize), String> {
             .parse()
             .map_err(|_| format!("invalid length {length}"))?,
     ))
+}
+
+fn parse_stack_window(text: &str) -> Result<(u32, u32), String> {
+    let (start, end) = text
+        .split_once(':')
+        .ok_or_else(|| "expected START:END".to_string())?;
+    let start = crate::parse_address(start)?;
+    let end = crate::parse_address(end)?;
+    if start >= end || start & 3 != 0 || end & 3 != 0 {
+        return Err("stack window must be non-empty and word aligned".into());
+    }
+    Ok((start, end))
 }

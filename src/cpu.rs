@@ -270,6 +270,20 @@ pub struct CpuSnapshot {
     pub control: [u32; 32],
 }
 
+/// Optional high-water observation for a linker-defined stack window.
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct StackMemoryObservation {
+    pub start: u32,
+    pub end: u32,
+    pub initialized: bool,
+    pub min_sp: u32,
+    pub min_sp_cycle: u64,
+    pub lowest_write: Option<u32>,
+    pub lowest_write_cycle: Option<u64>,
+    pub out_of_bounds_sp: bool,
+    pub out_of_bounds_write: bool,
+}
+
 pub struct Cpu {
     a: [u32; 32],
     b: [u32; 32],
@@ -371,6 +385,7 @@ pub struct Cpu {
     /// The register-write diagnostic is configured once per CPU instead of querying the
     /// process environment on every scheduled write.
     trace_a4: bool,
+    stack_observation: Option<StackMemoryObservation>,
     /// Sparse, exact-address decode cache for the 2 MiB L2 SRAM code window. Pages are
     /// allocated only when executed; fetched bytes and compact headers validate every hit.
     decoded_l2: Vec<Option<Box<[Option<DecodedEntry>]>>>,
@@ -433,6 +448,7 @@ impl Cpu {
             sploop_was_active: false,
             profiling: false,
             trace_a4: std::env::var_os("C64XEMU_TRACE_A4").is_some(),
+            stack_observation: None,
             decoded_l2: (0..DECODE_PAGES).map(|_| None).collect(),
             validated_l2: (0..DECODE_PAGES).map(|_| None).collect(),
             packet_address: pc,
@@ -449,6 +465,28 @@ impl Cpu {
         let (bank, index) = parse_register(name)?;
         self.write_register(bank, index, value);
         Ok(())
+    }
+
+    pub fn configure_stack_observation(&mut self, start: u32, end: u32) -> Result<(), String> {
+        if start >= end || start & 3 != 0 || end & 3 != 0 {
+            return Err("stack observation window must be non-empty and word aligned".into());
+        }
+        self.stack_observation = Some(StackMemoryObservation {
+            start,
+            end,
+            initialized: false,
+            min_sp: end,
+            min_sp_cycle: 0,
+            lowest_write: None,
+            lowest_write_cycle: None,
+            out_of_bounds_sp: false,
+            out_of_bounds_write: false,
+        });
+        Ok(())
+    }
+
+    pub fn stack_observation(&self) -> Option<StackMemoryObservation> {
+        self.stack_observation
     }
 
     pub fn register(&self, bank: char, index: usize) -> u32 {
@@ -3983,6 +4021,25 @@ impl Cpu {
             // A page that does not grant the write swallows it and reports the fault.
             let user = self.user_mode;
             if bus.check_access(store.address, Permission::Write, user) {
+                if let Some(observation) = self.stack_observation.as_mut() {
+                    let lo = u64::from(store.address);
+                    let hi = lo + u64::from(store.size);
+                    let stack_lo = u64::from(observation.start);
+                    let stack_hi = u64::from(observation.end);
+                    if lo < stack_hi && hi > stack_lo {
+                        if lo < stack_lo || hi > stack_hi {
+                            observation.out_of_bounds_write = true;
+                        }
+                        let address = store.address.max(observation.start);
+                        if observation
+                            .lowest_write
+                            .map_or(true, |current| address < current)
+                        {
+                            observation.lowest_write = Some(address);
+                            observation.lowest_write_cycle = Some(cycle);
+                        }
+                    }
+                }
                 self.stats.stores += 1;
                 if traced {
                     // The old value comes from the host view: reading it through the
@@ -4335,6 +4392,19 @@ impl Cpu {
     }
 
     fn write_register(&mut self, bank: Bank, index: usize, value: u32) {
+        if bank == Bank::B && index == 15 {
+            if let Some(observation) = self.stack_observation.as_mut() {
+                if (observation.start..=observation.end).contains(&value) {
+                    observation.initialized = true;
+                    if value < observation.min_sp {
+                        observation.min_sp = value;
+                        observation.min_sp_cycle = self.cycle;
+                    }
+                } else if observation.initialized {
+                    observation.out_of_bounds_sp = true;
+                }
+            }
+        }
         match bank {
             Bank::A => self.a[index] = value,
             Bank::B => self.b[index] = value,
