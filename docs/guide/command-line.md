@@ -152,14 +152,14 @@ c64xemu run [OPTIONS] <IMAGE>
 | `--dump ADDR:LEN` | none | Print a memory window on stderr when the run ends. Repeatable; windows print in the order given, before the state report. |
 | `--stack-window START:END` | none | Observe the focused core's B15 and committed stores in a word-aligned stack window. Adds `stack_observation` to the state JSON. |
 | `--stack-window-all START:END` | none | Observe B15 and committed stores on every core; adds ordered `stack_observations` entries to the state JSON. Mutually exclusive with `--stack-window`. |
+| `--pc-trail N` | `0` | Keep the last N execute-packet addresses, collapsing runs of the same address. Printed under `last N execute packets:` when the run faults, and used to annotate a `--trap-oob` stop. Zero keeps nothing: the trail costs a push per cycle, so a plain batch run does not install the hook at all. |
+| `--trap-oob` | off | Stop as soon as the program counter leaves every loaded segment. The check runs once per cycle against the ranges `Machine::loaded_ranges` reports, prints `fetch left the image at ...` plus up to twelve trail entries on stderr, and stops with `OutOfBounds`. An image whose memory came off the wire reports no ranges at all, so on an Ethernet or I2C boot the first cycle already looks out of bounds. |
+| `--perf` | off | Print the performance report on stderr after the state report. |
 
 Stack observation is passive and detects stores from CPU writeback when a store overlaps the
 configured window. Stores entirely outside it are not flagged, and DMA or global memory aliases
 are not covered. All-core mode includes cores held in reset; their entries remain uninitialized
 until they execute a B15 write.
-| `--pc-trail N` | `0` | Keep the last N execute-packet addresses, collapsing runs of the same address. Printed under `last N execute packets:` when the run faults, and used to annotate a `--trap-oob` stop. Zero keeps nothing: the trail costs a push per cycle, so a plain batch run does not install the hook at all. |
-| `--trap-oob` | off | Stop as soon as the program counter leaves every loaded segment. The check runs once per cycle against the ranges `Machine::loaded_ranges` reports, prints `fetch left the image at ...` plus up to twelve trail entries on stderr, and stops with `OutOfBounds`. An image whose memory came off the wire reports no ranges at all, so on an Ethernet or I2C boot the first cycle already looks out of bounds. |
-| `--perf` | off | Print the performance report on stderr after the state report. |
 
 `--pc-trail` and `--trap-oob` share one stop-condition closure, so asking for the trail is what
 makes a `--trap-oob` diagnostic useful.

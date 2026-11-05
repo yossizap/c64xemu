@@ -57,9 +57,6 @@ pub fn run(args: RunArgs) -> Result<u8, String> {
     if let Some((start, end)) = args.stack_window {
         machine.configure_stack_observation(start, end)?;
     }
-    if let Some((start, end)) = args.stack_window {
-        machine.configure_stack_observation(start, end)?;
-    }
     if let Some((start, end)) = args.stack_window_all {
         machine.configure_stack_observation_all(start, end)?;
     }
